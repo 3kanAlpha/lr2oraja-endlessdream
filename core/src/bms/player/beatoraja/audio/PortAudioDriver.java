@@ -2,9 +2,11 @@ package bms.player.beatoraja.audio;
 
 import java.nio.ByteBuffer;
 import java.nio.file.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.portaudio.*;
 import bms.player.beatoraja.Config;
+import com.portaudio.*;
 
 /**
  * PortAudioドライバ
@@ -12,10 +14,14 @@ import bms.player.beatoraja.Config;
  * @author exch
  */
 public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnable {
+	private static final Logger logger = LoggerFactory.getLogger(PortAudioDriver.class);
+	private static final int WRITE_RETRY_COUNT = 1;
 
 	private static DeviceInfo[] devices;
 	
 	private BlockingStream stream;
+	private final StreamParameters streamParameters;
+	private final int framesPerBuffer;
 
 	/**
 	 * ミキサー入力
@@ -24,7 +30,7 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 
 	private long idcount;
 	
-	private boolean stop = false;
+	private volatile boolean stop = false;
 	
 	private final float[] buffer;
 	
@@ -61,19 +67,14 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 //		System.out.println( "  sampleRate  = " + sampleRate );
 //		System.out.println( "  device name = " + deviceInfo.name );
 
-		StreamParameters streamParameters = new StreamParameters();
+		streamParameters = new StreamParameters();
 		streamParameters.channelCount = channels;
 		streamParameters.device = deviceId;
-		int framesPerBuffer = config.getAudioConfig().getDeviceBufferSize();
+		framesPerBuffer = config.getAudioConfig().getDeviceBufferSize();
 		streamParameters.suggestedLatency = ((double)framesPerBuffer) / getSampleRate();
 //		System.out.println( "  suggestedLatency = " + streamParameters.suggestedLatency );
 
-		int flags = 0;
-		
-		// Open a stream for output.
-		stream = PortAudio.openStream( null, streamParameters, getSampleRate(), framesPerBuffer, flags );
-
-		stream.start();
+		stream = openStream();
 
 		mixer = new Thread(this);
 		buffer = new float[framesPerBuffer * channels];
@@ -222,17 +223,57 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 					}
 					buffer[i] = wav_l;
 					buffer[i+1] = wav_r;
-				}						
+				}
 			}
-			
-			try {
-				stream.write( buffer, buffer.length / 2);
-			} catch(Throwable e) {
-				e.printStackTrace();
-			}
-			
+
+			writeBuffer();
+
 		}
-	}		
+	}
+
+	private void writeBuffer() {
+		int failures = 0;
+		while (!stop) {
+			try {
+				stream.write(buffer, framesPerBuffer);
+				return;
+			} catch (RuntimeException e) {
+				logger.warn("PortAudio stream write failed", e);
+			}
+
+			if (shouldReopenStream(++failures)) {
+				reopenStream();
+				// The failed write may be partial, so resume with the next buffer instead of replaying it.
+				return;
+			}
+		}
+	}
+
+	static boolean shouldReopenStream(int consecutiveFailures) {
+		return consecutiveFailures > WRITE_RETRY_COUNT;
+	}
+
+	private BlockingStream openStream() {
+		BlockingStream openedStream = PortAudio.openStream(null, streamParameters, getSampleRate(), framesPerBuffer, 0);
+		openedStream.start();
+		return openedStream;
+	}
+
+	private void reopenStream() {
+		try {
+			stream.abort();
+		} catch (RuntimeException e) {
+			logger.warn("Failed to abort PortAudio stream", e);
+		}
+		try {
+			stream.close();
+		} catch (RuntimeException e) {
+			logger.warn("Failed to close PortAudio stream", e);
+		}
+		if (!stop) {
+			stream = openStream();
+		}
+	}
 
 	public void dispose() {
 		super.dispose();
