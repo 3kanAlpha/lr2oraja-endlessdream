@@ -6,6 +6,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import bms.player.beatoraja.Config;
+import com.sun.jna.Platform;
+import com.sun.jna.platform.win32.Ole32;
+import com.sun.jna.platform.win32.COM.COMUtils;
 import com.portaudio.*;
 
 /**
@@ -16,10 +19,12 @@ import com.portaudio.*;
 public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnable {
 	private static final Logger logger = LoggerFactory.getLogger(PortAudioDriver.class);
 	private static final int WRITE_RETRY_COUNT = 1;
+	private static final long REOPEN_RETRY_DELAY_MILLIS = 1000;
 
 	private static DeviceInfo[] devices;
 	
 	private BlockingStream stream;
+	private final Object streamLock = new Object();
 	private final StreamParameters streamParameters;
 	private final int framesPerBuffer;
 
@@ -130,7 +135,9 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 					input.loop = loop;
 					input.id = idcount++;
 					input.channel = channel;
+					input.startedAtNanos = System.nanoTime();
 					input.pos = 0;
+					input.posf = 0;
 					return input.id;
 				}
 			}
@@ -185,6 +192,25 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 	}
 
 	public void run() {
+		boolean comInitialized = Platform.isWindows()
+				&& COMUtils.SUCCEEDED(Ole32.INSTANCE.CoInitialize(null));
+		try {
+			runMixer();
+		} finally {
+			try {
+				synchronized (streamLock) {
+					closeStream();
+					PortAudio.terminate();
+				}
+			} finally {
+				if (comInitialized) {
+					Ole32.INSTANCE.CoUninitialize();
+				}
+			}
+		}
+	}
+
+	private void runMixer() {
 		while(!stop) {
 			final float gpitch = getGlobalPitch();
 			synchronized (inputs) {
@@ -196,19 +222,19 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 							if(input.pcm instanceof FloatPCM) {
 								final float[] sample = (float[]) input.pcm.sample;
 								wav_l += sample[input.pos + input.pcm.start] * input.volume;
-								wav_r += sample[input.pos+1 + input.pcm.start] * input.volume;																
+								wav_r += sample[input.pos+1 + input.pcm.start] * input.volume;
 							} else if(input.pcm instanceof ShortDirectPCM) {
 								final ByteBuffer sample = (ByteBuffer) input.pcm.sample;
 								wav_l += ((float) sample.getShort((input.pos + input.pcm.start) * 2)) * input.volume / Short.MAX_VALUE;
-								wav_r += ((float) sample.getShort((input.pos+1 + input.pcm.start) * 2)) * input.volume / Short.MAX_VALUE;																
+								wav_r += ((float) sample.getShort((input.pos+1 + input.pcm.start) * 2)) * input.volume / Short.MAX_VALUE;
 							} else if(input.pcm instanceof ShortPCM) {
 								final short[] sample = (short[]) input.pcm.sample;
 								wav_l += ((float) sample[input.pos + input.pcm.start]) * input.volume / Short.MAX_VALUE;
-								wav_r += ((float) sample[input.pos+1 + input.pcm.start]) * input.volume / Short.MAX_VALUE;																
+								wav_r += ((float) sample[input.pos+1 + input.pcm.start]) * input.volume / Short.MAX_VALUE;
 							} else if(input.pcm instanceof BytePCM) {
 								final byte[] sample = (byte[]) input.pcm.sample;
 								wav_l += ((float) (sample[input.pos + input.pcm.start] - 128)) * input.volume / Byte.MAX_VALUE;
-								wav_r += ((float) (sample[input.pos+1 + input.pcm.start] - 128)) * input.volume / Byte.MAX_VALUE;																
+								wav_r += ((float) (sample[input.pos+1 + input.pcm.start] - 128)) * input.volume / Byte.MAX_VALUE;
 							}
 							input.posf += gpitch * input.pitch;
 							int inc = (int)input.posf;
@@ -227,25 +253,67 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 			}
 
 			writeBuffer();
-
 		}
 	}
 
 	private void writeBuffer() {
+		long writeStartedAtNanos = System.nanoTime();
 		int failures = 0;
 		while (!stop) {
 			try {
 				stream.write(buffer, framesPerBuffer);
+				if (failures > 0) {
+					catchUpInputs(writeStartedAtNanos);
+				}
 				return;
 			} catch (RuntimeException e) {
 				logger.warn("PortAudio stream write failed", e);
 			}
 
 			if (shouldReopenStream(++failures)) {
-				reopenStream();
+				while (!stop && !reopenStream()) {
+					try {
+						Thread.sleep(REOPEN_RETRY_DELAY_MILLIS);
+					} catch (InterruptedException e) {
+						stop = true;
+						Thread.currentThread().interrupt();
+						return;
+					}
+				}
+				catchUpInputs(writeStartedAtNanos);
 				// The failed write may be partial, so resume with the next buffer instead of replaying it.
 				return;
 			}
+		}
+	}
+
+	private void catchUpInputs(long writeStartedAtNanos) {
+		long catchUpFromNanos = writeStartedAtNanos
+				+ (long) framesPerBuffer * 1_000_000_000L / getSampleRate();
+		float gpitch = getGlobalPitch();
+		synchronized (inputs) {
+			long now = System.nanoTime();
+			for (MixerInput input : inputs) {
+				if (input.pos != -1) {
+					advanceInput(input, now - Math.max(catchUpFromNanos, input.startedAtNanos),
+							getSampleRate(), gpitch, channels);
+				}
+			}
+		}
+	}
+
+	static void advanceInput(MixerInput input, long elapsedNanos, int sampleRate, float globalPitch, int channels) {
+		if (elapsedNanos <= 0) {
+			return;
+		}
+		double frames = input.posf + elapsedNanos * (double) sampleRate / 1_000_000_000 * globalPitch * input.pitch;
+		long frameAdvance = (long) frames;
+		input.posf = (float) (frames - frameAdvance);
+		long position = input.pos + frameAdvance * channels;
+		if (position >= input.pcm.len) {
+			input.pos = input.loop ? (int) (position % input.pcm.len) : -1;
+		} else {
+			input.pos = (int) position;
 		}
 	}
 
@@ -259,7 +327,26 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 		return openedStream;
 	}
 
-	private void reopenStream() {
+	private boolean reopenStream() {
+		synchronized (streamLock) {
+			if (stop) {
+				return false;
+			}
+			closeStream();
+			try {
+				stream = openStream();
+				return true;
+			} catch (RuntimeException e) {
+				logger.warn("Failed to reopen PortAudio stream; retrying", e);
+				return false;
+			}
+		}
+	}
+
+	private void closeStream() {
+		if (stream == null) {
+			return;
+		}
 		try {
 			stream.abort();
 		} catch (RuntimeException e) {
@@ -270,24 +357,38 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 		} catch (RuntimeException e) {
 			logger.warn("Failed to close PortAudio stream", e);
 		}
-		if (!stop) {
-			stream = openStream();
-		}
+		stream = null;
 	}
 
 	public void dispose() {
-		super.dispose();
-		if(stream != null) {
+		synchronized (streamLock) {
 			stop = true;
-			long l = System.currentTimeMillis();
-			while(mixer.isAlive() && System.currentTimeMillis() - l < 1000);
-			stream.stop();
-			stream.close();
-			
-			stream = null;
+		}
+		super.dispose();
+		try {
+			mixer.join(1000);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
 
-			PortAudio.terminate();
-//			System.out.println( "JPortAudio test complete." );			
+		if (mixer.isAlive()) {
+			synchronized (streamLock) {
+				if (stream != null) {
+					try {
+						stream.abort();
+					} catch (RuntimeException e) {
+						logger.warn("Failed to abort PortAudio stream", e);
+					}
+				}
+			}
+			try {
+				mixer.join(1000);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+			if (mixer.isAlive()) {
+				logger.warn("PortAudio mixer thread did not stop");
+			}
 		}
 	}
 
@@ -299,6 +400,7 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 		public float posf = 0.0f;
 		public boolean loop;
 		public long id;
+		public long startedAtNanos;
 		public int channel = -1;
 	}
 }
