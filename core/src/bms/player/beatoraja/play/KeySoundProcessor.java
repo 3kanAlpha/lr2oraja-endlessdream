@@ -69,14 +69,16 @@ public class KeySoundProcessor {
 		@Override
 		public void run() {
 			final long lasttime = timelines.length > 0 ?
-					timelines[timelines.length - 1].getMicroTime() : 0;
+				timelines[timelines.length - 1].getMicroTime() : 0;
 			final Config config = player.resource.getConfig();
+			final long timingOffset = player.isPlayAssistEnabled()
+					? player.resource.getPlayerConfig().getJudgetiming() * 1000L : 0;
 			int p = 0;
-			for (long time = starttime; p < timelines.length && timelines[p].getMicroTime() < time; p++)
+			for (long time = starttime + timingOffset; p < timelines.length && timelines[p].getMicroTime() < time; p++)
 				;
 
 			while (!stop) {
-				final long time = player.timer.getNowMicroTime(TIMER_PLAY);
+				final long time = player.timer.getNowMicroTime(TIMER_PLAY) + timingOffset;
 				float volume = player.getAdjustedVolume();
 				if (volume < 0) {
 					volume = config.getAudioConfig().getBgvolume();

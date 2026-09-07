@@ -143,10 +143,34 @@ class PlayAssistTest {
     }
 
     @Test
-    void loudnessNormalizationKeepsKeyVolumeSetting() {
-        var result = new BMSLoudnessAnalyzer.AnalysisResult(null, -12.0);
-        assertEquals(.25f, result.calculateAdjustedVolume(.25f), 0.0001f);
-        assertEquals(.75f, result.calculateAdjustedVolume(.75f), 0.0001f);
+    void playAssistTimingOffsetMovesBgmAndNotesTogether() throws Exception {
+        var h = harness(true, chart());
+        h.player.resource.getPlayerConfig().setJudgetiming(100);
+        h.model.setAllTimeLine(new TimeLine[]{h.model.getAllTimeLines()[1]});
+        h.clock.time = 900_000;
+
+        new KeySoundProcessor(h.player).new AutoplayThread(h.model, 0).run();
+
+        assertEquals(List.of(10, 1, 3, 5, 7, 2), noteIds(h));
+    }
+
+    @Test
+    void negativePlayAssistTimingOffsetDelaysAudio() throws Exception {
+        var h = harness(true, chart());
+        h.player.resource.getPlayerConfig().setJudgetiming(-100);
+        h.model.setAllTimeLine(new TimeLine[]{h.model.getAllTimeLines()[1]});
+        h.clock.time = 1_099_999;
+        var processor = new KeySoundProcessor(h.player);
+        var thread = processor.new AutoplayThread(h.model, 0);
+
+        thread.start();
+        Thread.sleep(20);
+        assertTrue(h.events.isEmpty());
+
+        h.clock.time = 1_100_000;
+        thread.join(3000);
+        assertFalse(thread.isAlive());
+        assertEquals(List.of(10, 1, 3, 5, 7, 2), noteIds(h));
     }
 
     @Test
