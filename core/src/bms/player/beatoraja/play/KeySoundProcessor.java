@@ -1,19 +1,16 @@
 package bms.player.beatoraja.play;
 
-import static bms.model.DecodeLog.State.WARNING;
 import static bms.player.beatoraja.skin.SkinProperty.TIMER_PLAY;
 
-import bms.model.DecodeLog;
 import com.badlogic.gdx.utils.Array;
 
 import bms.model.BMSModel;
+import bms.model.LongNote;
+import bms.model.NormalNote;
 import bms.model.Note;
 import bms.model.TimeLine;
 import bms.player.beatoraja.Config;
 import bms.player.beatoraja.audio.AudioDriver;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * キー音処理用クラス
@@ -53,7 +50,7 @@ public class KeySoundProcessor {
 	 */
 	class AutoplayThread extends Thread {
 
-		private boolean stop = false;
+		private volatile boolean stop = false;
 
 		private final long starttime;
 		final TimeLine[] timelines;
@@ -62,7 +59,7 @@ public class KeySoundProcessor {
 			this.starttime = starttime;
 			Array<TimeLine> tls = new Array<TimeLine>();
 			for(TimeLine tl : model.getAllTimeLines()) {
-				if(tl.getBackGroundNotes().length > 0) {
+				if(tl.getBackGroundNotes().length > 0 || (player.isPlayAssistEnabled() && tl.existNote())) {
 					tls.add(tl);
 				}
 			}
@@ -84,10 +81,22 @@ public class KeySoundProcessor {
 				if (volume < 0) {
 					volume = config.getAudioConfig().getBgvolume();
 				}
+				float keyVolume = player.getAdjustedVolume();
+				if (keyVolume < 0) {
+					keyVolume = config.getAudioConfig().getKeyvolume();
+				}
 				// BGレーン再生
 				while (p < timelines.length && timelines[p].getMicroTime() <= time) {
 					for (Note n : timelines[p].getBackGroundNotes()) {
 						audio.play(n, volume, 0);
+					}
+					if (player.isPlayAssistEnabled()) {
+						for (int lane = 0; lane < timelines[p].getLaneCount(); lane++) {
+							Note n = timelines[p].getNote(lane);
+							if (n instanceof NormalNote || n instanceof LongNote) {
+								audio.play(n, keyVolume, 0);
+							}
+						}
 					}
 					p++;
 				}

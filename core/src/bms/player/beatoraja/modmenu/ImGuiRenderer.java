@@ -47,6 +47,11 @@ public class ImGuiRenderer {
     private static ImBoolean SHOW_PERFORMANCE_MONITOR = new ImBoolean(false);
     private static ImBoolean SHOW_SKIN_MENU = new ImBoolean(false);
     private static ImBoolean SHOW_MISC_SETTING = new ImBoolean(false);
+    private static final ImBoolean PLAY_ASSIST = new ImBoolean(false);
+
+    public static boolean isPlayAssistEnabled() {
+        return PLAY_ASSIST.get();
+    }
 
 
     public static void init() {
@@ -112,6 +117,7 @@ public class ImGuiRenderer {
         if (SHOW_MOD_MENU.get()) {
             ImGui.begin("Endless Dream", ImGuiWindowFlags.AlwaysAutoResize);
 
+            ImGui.checkbox("Play assist", PLAY_ASSIST);
             ImGui.checkbox("Show Rate Modifier Window", SHOW_FREQ_PLUS);
             ImGui.checkbox("Show Random Trainer Window", SHOW_RANDOM_TRAINER);
             ImGui.checkbox("Show Judge Trainer Window", SHOW_JUDGE_TRAINER);

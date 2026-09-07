@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import bms.player.beatoraja.audio.BMSLoudnessAnalyzer;
 import bms.player.beatoraja.modmenu.FreqTrainerMenu;
 import bms.player.beatoraja.modmenu.ImGuiNotify;
+import bms.player.beatoraja.modmenu.ImGuiRenderer;
 import bms.player.beatoraja.modmenu.JudgeTrainer;
 import bms.player.beatoraja.modmenu.RandomTrainer;
 import com.badlogic.gdx.utils.Array;
@@ -61,6 +62,11 @@ public class BMSPlayer extends MainState {
 	private KeySoundProcessor keysound;
 
 	private int assist = 0;
+	private final boolean playAssist;
+
+	public boolean isPlayAssistEnabled() {
+		return playAssist;
+	}
 
 	private ReplayData playinfo = new ReplayData();
 	/**
@@ -104,6 +110,7 @@ public class BMSPlayer extends MainState {
 
 	public BMSPlayer(MainController main, PlayerResource resource) {
 		super(main);
+		playAssist = ImGuiRenderer.isPlayAssistEnabled();
 		this.model = resource.getBMSModel();
 		BMSPlayerMode autoplay = resource.getPlayMode();
 		PlayerConfig config = resource.getPlayerConfig();
