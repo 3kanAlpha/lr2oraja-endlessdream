@@ -2,6 +2,7 @@ package bms.player.beatoraja.audio;
 
 import java.nio.ByteBuffer;
 import java.nio.file.*;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,6 +28,7 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 	private final Object streamLock = new Object();
 	private final StreamParameters streamParameters;
 	private final int framesPerBuffer;
+	private final Supplier<BlockingStream> streamOpener;
 
 	/**
 	 * ミキサー入力
@@ -54,8 +56,11 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 	}
 
 	public PortAudioDriver(Config config) {
+		this(config, getDevices(), null);
+	}
+
+	PortAudioDriver(Config config, DeviceInfo[] devices, Supplier<BlockingStream> streamOpener) {
 		super(config.getSongResourceGen());
-		DeviceInfo[] devices = getDevices();
 		// Get the default device and setup the stream parameters.
 		int deviceId = 0;
 		for(int i = 0;i < devices.length;i++) {
@@ -77,6 +82,8 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 		streamParameters.device = deviceId;
 		framesPerBuffer = config.getAudioConfig().getDeviceBufferSize();
 		streamParameters.suggestedLatency = ((double)framesPerBuffer) / getSampleRate();
+		this.streamOpener = streamOpener != null ? streamOpener
+				: () -> PortAudio.openStream(null, streamParameters, getSampleRate(), framesPerBuffer, 0);
 //		System.out.println( "  suggestedLatency = " + streamParameters.suggestedLatency );
 
 		stream = openStream();
@@ -322,9 +329,18 @@ public class PortAudioDriver extends AbstractAudioDriver<PCM> implements Runnabl
 	}
 
 	private BlockingStream openStream() {
-		BlockingStream openedStream = PortAudio.openStream(null, streamParameters, getSampleRate(), framesPerBuffer, 0);
-		openedStream.start();
-		return openedStream;
+		BlockingStream openedStream = streamOpener.get();
+		try {
+			openedStream.start();
+			return openedStream;
+		} catch (RuntimeException e) {
+			try {
+				openedStream.close();
+			} catch (RuntimeException closeError) {
+				e.addSuppressed(closeError);
+			}
+			throw e;
+		}
 	}
 
 	private boolean reopenStream() {
