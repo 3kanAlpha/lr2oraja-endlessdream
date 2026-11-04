@@ -155,6 +155,42 @@ class PlayAssistTest {
     }
 
     @Test
+    void positivePlayAssistTimingOffsetKeepsOpeningBgmAndNotes() throws Exception {
+        var h = harness(true, chart());
+        h.player.resource.getPlayerConfig().setJudgetiming(65);
+        var opening = new TimeLine(0, 0, 8);
+        opening.addBackGroundNote(new NormalNote(20));
+        opening.setNote(0, new NormalNote(21));
+        var early = new TimeLine(.01, 64_999, 8);
+        early.addBackGroundNote(new NormalNote(22));
+        early.setNote(0, new NormalNote(23));
+        h.model.setAllTimeLine(new TimeLine[]{opening, early});
+
+        new KeySoundProcessor(h.player).new AutoplayThread(h.model, 0).run();
+
+        assertEquals(List.of(20, 21, 22, 23), noteIds(h));
+    }
+
+    @Test
+    void playAssistTimingOffsetDoesNotChangePlaybackStartBoundary() throws Exception {
+        for (int offset : new int[]{65, -65}) {
+            var h = harness(true, chart());
+            h.player.resource.getPlayerConfig().setJudgetiming(offset);
+            var before = new TimeLine(1, 1_999_999, 8);
+            before.addBackGroundNote(new NormalNote(20));
+            var start = new TimeLine(2, 2_000_000, 8);
+            start.addBackGroundNote(new NormalNote(21));
+            start.setNote(0, new NormalNote(22));
+            h.model.setAllTimeLine(new TimeLine[]{before, start});
+            h.clock.time = 2_100_000;
+
+            new KeySoundProcessor(h.player).new AutoplayThread(h.model, 2_000_000).run();
+
+            assertEquals(List.of(21, 22), noteIds(h), "timing offset: " + offset);
+        }
+    }
+
+    @Test
     void negativePlayAssistTimingOffsetDelaysAudio() throws Exception {
         var h = harness(true, chart());
         h.player.resource.getPlayerConfig().setJudgetiming(-100);

@@ -74,7 +74,7 @@ public class KeySoundProcessor {
 			final long timingOffset = player.isPlayAssistEnabled()
 					? player.resource.getPlayerConfig().getJudgetiming() * 1000L : 0;
 			int p = 0;
-			for (long time = starttime + timingOffset; p < timelines.length && timelines[p].getMicroTime() < time; p++)
+			for (; p < timelines.length && timelines[p].getMicroTime() < starttime; p++)
 				;
 
 			while (!stop) {
